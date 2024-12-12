@@ -1,69 +1,84 @@
 import socket
 import threading
 import json
+import ast  # Import ast for safe evaluation of non-standard JSON strings
 import requests
+from cryptography.fernet import Fernet
 
-UDP_PORT = 5000  # Updated to avoid permission issues
-API_URL = "https://desksensor.azurewebsites.net/api/Desks"  # Replace with your REST server URL
+# Configuration
+UDP_PORT = 5000  # Port for UDP server
+API_URL = "https://desksensor.azurewebsites.net/api/Desks"  # Replace with your REST endpoint
+ENCRYPTION_KEY = b'G4UJyewVp1Tw5PLd5RgN4wYf-F7GAgA_lT3-Yj4oDfU='  # Same as in SensorTest.py
 
 # Create and bind the socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.bind(("0.0.0.0", UDP_PORT))
 
+# Initialize the encryption suite
+cipher_suite = Fernet(ENCRYPTION_KEY)
+
 print(f"Listening for UDP packets on all interfaces, port {UDP_PORT}...")
 
-# Counter for assigning unique IDs
+# Counter for assigning unique client IDs
 client_id = 1
-client_id_lock = threading.Lock()  # To ensure thread safety
+client_id_lock = threading.Lock()  # Thread-safe lock for ID increment
 
 # Function to handle each client
-def handle_Client(data, addr):
+def handle_client(data, addr):
     global client_id
-    
     try:
-        # Decode the incoming message
-        decoded_data = data.decode()
+        # Decrypt the incoming message
+        decrypted_data = cipher_suite.decrypt(data).decode()
+        print(f"Decrypted message from {addr}: {decrypted_data}")
         
-        # Parse the string data into a dictionary
-        original_data = json.loads(decoded_data)
-        
-        # Assign a unique ID for this client
-        with client_id_lock:
-           unique_id = client_id
-           client_id = 0
+        # Handle JSON-like strings with single quotes
+        try:
+            # Attempt to parse the decrypted data as JSON
+            original_data = json.loads(decrypted_data)
+        except json.JSONDecodeError:
+            # If JSON parsing fails, try to safely evaluate the string as a Python dictionary
+            print("Trying to fix non-standard JSON...")
+            original_data = ast.literal_eval(decrypted_data)
 
-        # Transform the data into the desired JSON format
+        # Assign a unique ID to this client
+        with client_id_lock:
+            unique_id = client_id
+            client_id += 1
+
+        # Prepare transformed data
         transformed_data = {
             "id": unique_id,
             "name": original_data.get("name", "unknown"),
-            "occupied": bool(original_data.get("occupied", 0))
+            "occupied": bool(original_data.get("occupied", 1))
         }
         
-        # Print the transformed JSON
         print(f"Transformed data from {addr}: {json.dumps(transformed_data, indent=2)}")
-        
-        # Convert transformed data to JSON string
-        json_string = json.dumps(transformed_data)
-        
+
         # Send the transformed data to the REST server
-        headers_array = {'Content-type': 'application/json'}
-        
-        
-        response = requests.post(API_URL, data=json_string, headers=headers_array)
-        
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(API_URL, json=transformed_data, headers=headers)
 
         # Log the response from the REST server
         print(f"REST server response: {response.status_code} - {response.text}")
 
-    except json.JSONDecodeError:
-        print(f"Failed to decode JSON from {addr}: {data.decode()}")
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"Failed to decode JSON from {addr}: {decrypted_data} - Error: {e}")
     except requests.RequestException as e:
         print(f"Failed to send data to REST server: {e}")
+    except Exception as e:
+        print(f"Unexpected error handling data from {addr}: {e}")
 
-# Main loop to receive and handle data
-while True:
-    data, addr = sock.recvfrom(1024)  # Buffer size is 1024 bytes
+# Main server loop
+try:
+    while True:
+        # Receive data from the client
+        data, addr = sock.recvfrom(1024)  # Buffer size is 1024 bytes
 
-    # Start a new thread for each client
-    thread = threading.Thread(target=handle_Client, args=(data, addr))
-    thread.start()
+        # Start a new thread to handle the client
+        thread = threading.Thread(target=handle_client, args=(data, addr))
+        thread.start()
+
+except KeyboardInterrupt:
+    print("\nServer shutting down.")
+finally:
+    sock.close()
