@@ -43,13 +43,13 @@ def handle_client(data, addr):
         # Assign a unique ID to this client
         with client_id_lock:
             unique_id = client_id
-            client_id += 1
+            client_id = 1
 
         # Prepare transformed data
         transformed_data = {
             "id": unique_id,
             "name": original_data.get("name", "unknown"),
-            "occupied": bool(original_data.get("occupied", 1))
+            "occupied": not bool(original_data.get("occupied", 1))
         }
         
         print(f"Transformed data from {addr}: {json.dumps(transformed_data, indent=2)}")
